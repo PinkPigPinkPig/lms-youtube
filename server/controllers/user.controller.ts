@@ -14,6 +14,7 @@ import {
 } from "../utils/jwt"
 import { redis } from "../utils/redis"
 import { getUserById } from "../services/user.service"
+import cloudinary from "cloudinary"
 
 // register user
 interface IRegistrationBody {
@@ -228,6 +229,8 @@ export const updateAccessToken = CatchAsyncError(
         }
       )
 
+      req.user = user
+
       res.cookie("access_token", accessToken, accessTokenOptions)
       res.cookie("refresh_token", refreshToken, refreshTokenOptions)
 
@@ -290,16 +293,15 @@ export const updateUserInfo = CatchAsyncError(
       const userId = req.user?._id
       const user = await userModel.findById(userId)
 
-      if(email && user) {
-        const isEmailExist = await userModel.findOne({email})
-        if(isEmailExist) {
+      if (email && user) {
+        const isEmailExist = await userModel.findOne({ email })
+        if (isEmailExist) {
           return next(new ErrorHandler("Email already exist", 400))
         }
         user.email = email
-
       }
 
-      if(name && user) {
+      if (name && user) {
         user.name = name
       }
 
@@ -309,9 +311,105 @@ export const updateUserInfo = CatchAsyncError(
 
       res.status(201).json({
         success: true,
-        user
+        user,
       })
-      
+    } catch (error: any) {
+      return next(new ErrorHandler(error.message, 400))
+    }
+  }
+)
+
+// update user password
+interface IUpdatePassword {
+  oldPassword: string
+  newPassword: string
+}
+
+export const updatePassword = CatchAsyncError(
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { oldPassword, newPassword } = req.body as IUpdatePassword
+
+      if (!oldPassword || !newPassword)
+        return next(
+          new ErrorHandler("Please enter old password and new password", 400)
+        )
+
+      if (oldPassword === newPassword)
+        return next(
+          new ErrorHandler(
+            "The new password must be different from the old password",
+            400
+          )
+        )
+
+      const user = await userModel.findById(req.user?._id).select("+password")
+
+      if (user?.password === undefined)
+        return next(new ErrorHandler("Invalid user", 400))
+
+      const isPasswordMatch = await user?.comparePassword(oldPassword)
+
+      if (!isPasswordMatch)
+        return next(new ErrorHandler("Invalid old password", 400))
+
+      user.password = newPassword
+
+      await user.save()
+
+      res.status(201).json({
+        success: true,
+        user,
+      })
+    } catch (error: any) {
+      return next(new ErrorHandler(error.message, 400))
+    }
+  }
+)
+
+// update profile picture
+interface IUpdateProfilePicture {
+  avatar: string
+}
+
+export const updateProfilePicture = CatchAsyncError(
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { avatar } = req.body as IUpdateProfilePicture
+
+      if (!avatar) {
+        return next(new ErrorHandler("Please enter avatar", 400))
+      }
+
+      const userId = req.user?._id
+
+      const user = await userModel.findById(userId)
+
+      if (!user) {
+        return next(new ErrorHandler("User is not null", 400))
+      }
+
+      if (user?.avatar?.public_id) {
+        await cloudinary.v2.uploader.destroy(user?.avatar?.public_id)
+      }
+
+      const myCloud = await cloudinary.v2.uploader.upload(avatar, {
+        folder: "avatars",
+        // width: 150,
+      })
+      user.avatar = {
+        public_id: myCloud.public_id,
+        url: myCloud.secure_url,
+      }
+
+      await user.save()
+
+      await redis.set(userId, JSON.stringify(user))
+
+      res.status(201).json({
+        success: true,
+        user,
+      })
     } catch (error: any) {
       return next(new ErrorHandler(error.message, 400))
     }
